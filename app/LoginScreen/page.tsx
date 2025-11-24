@@ -12,7 +12,10 @@ import {
   View,
 } from "react-native";
 
-// Cores diretas para facilitar
+// --- IMPORTAÇÕES DO FIREBASE ---
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth } from "../../firebaseConfig"; // Ajuste o caminho conforme sua estrutura
+
 const colors = { primary: "#4FC3F7", secondary: "#0288D1" };
 
 export default function LoginScreen() {
@@ -35,32 +38,46 @@ export default function LoginScreen() {
       Alert.alert("Erro", "Preencha todos os campos.");
       return;
     }
-      // Mock login para testes sem backend
-    if(email == 'test@test.com' && senha == 'test'){
-      await AsyncStorage.setItem("user_session", JSON.stringify({email: 'test'}));
-      router.replace("/HomePage/page");
-      return;
-    }
 
     setLoading(true);
     try {
-      const res = await fetch("http://192.168.0.24:4000/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password: senha }),
-      });
+      // --- LOGIN COM FIREBASE ---
+      const userCredential = await signInWithEmailAndPassword(auth, email, senha);
+      const user = userCredential.user;
 
-      const data = await res.json();
+      // Prepara os dados do usuário para salvar na sessão do app
+      // O 'displayName' virá preenchido se o registro foi feito corretamente
+      const userData = {
+        uid: user.uid,
+        email: user.email,
+        name: user.displayName || "Usuário"
+      };
 
-      if (res.ok) {
-        await AsyncStorage.setItem("user_session", JSON.stringify(data));
-        router.replace("/HomePage/page");
-      } else {
-        Alert.alert("Erro", data.message || "Credenciais inválidas.");
-      }
+      // Salva no armazenamento local para manter a sessão
+      await AsyncStorage.setItem("user_session", JSON.stringify(userData));
+
+      // Redireciona para a Home
+      router.replace("/HomePage/page");
+
     } catch (error) {
-      Alert.alert("Erro", "Não foi possível conectar ao servidor.");
-      console.error(error);
+      console.log(error);
+      let msg = "Erro ao fazer login.";
+      
+      // Tratamento de erros comuns do Firebase
+      // Nota: O Firebase atualizou alguns códigos de erro recentemente
+      const code = error.code;
+      
+      if (code === 'auth/invalid-credential' || code === 'auth/user-not-found' || code === 'auth/wrong-password') {
+        msg = "E-mail ou senha incorretos.";
+      } else if (code === 'auth/invalid-email') {
+        msg = "Formato de e-mail inválido.";
+      } else if (code === 'auth/too-many-requests') {
+        msg = "Muitas tentativas falhas. Aguarde um pouco e tente novamente.";
+      } else if (code === 'auth/network-request-failed') {
+        msg = "Verifique sua conexão com a internet.";
+      }
+
+      Alert.alert("Acesso Negado", msg);
     } finally {
       setLoading(false);
     }
@@ -107,6 +124,17 @@ export default function LoginScreen() {
           <Text style={styles.buttonText}>ENTRAR</Text>
         )}
       </TouchableOpacity>
+
+      {/* --- BOTÃO DE CADASTRO --- */}
+      <TouchableOpacity
+        style={styles.registerLink}
+        onPress={() => router.push("/RegisterScreen/page")}
+      >
+        <Text style={styles.registerText}>
+          Não possui cadastro? <Text style={styles.registerBold}>Cadastre-se</Text>
+        </Text>
+      </TouchableOpacity>
+      
     </View>
   );
 }
@@ -150,4 +178,19 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   buttonText: { color: "#FFF", fontWeight: "bold", fontSize: 16 },
+
+  // Estilos do link de cadastro
+  registerLink: {
+    marginTop: 20,
+    alignItems: "center",
+    padding: 10, // Aumenta a área de toque
+  },
+  registerText: {
+    color: colors.secondary,
+    fontSize: 16,
+  },
+  registerBold: {
+    fontWeight: "bold",
+    textDecorationLine: "underline", // Opcional: sublinha para parecer mais link
+  },
 });

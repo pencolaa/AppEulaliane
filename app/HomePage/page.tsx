@@ -1,5 +1,5 @@
 // @ts-nocheck
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -11,14 +11,28 @@ import {
   Platform,
   ScrollView,
   TextInput,
+  Linking,
+  ActivityIndicator,
 } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as Location from "expo-location";
 import * as Calendar from "expo-calendar";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
-import MapView, { Marker } from "react-native-maps";
 import DateTimePicker from "@react-native-community/datetimepicker";
+
+// --- IMPORTAÇÕES DO FIREBASE ---
+import {
+  collection,
+  addDoc,
+  query,
+  where,
+  onSnapshot,
+  deleteDoc,
+  doc,
+  updateDoc,
+} from "firebase/firestore";
+import { db, auth } from "../../firebaseConfig"; // Caminho para sua config
 
 const colors = {
   primary: "#4FC3F7",
@@ -35,29 +49,94 @@ export default function HomeScreen() {
   const cameraRef = useRef(null);
   const router = useRouter();
 
-  // --- ESTADOS ---
   const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [currentOrderId, setCurrentOrderId] = useState(null);
 
-  // --- ESTADOS DO AGENDAMENTO ---
   const [modalAgendamentoVisible, setModalAgendamentoVisible] = useState(false);
   const [novoPrato, setNovoPrato] = useState("");
   const [novoDestinatario, setNovoDestinatario] = useState("");
-  const [novoEndereco, setNovoEndereco] = useState(""); // <--- NOVO ESTADO
+  const [novoEndereco, setNovoEndereco] = useState("");
 
   const [dataAgendamento, setDataAgendamento] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
   const [mode, setMode] = useState("date");
 
-  // --- FUNÇÕES ---
+  // --- 1. BUSCAR DADOS DO BANCO (FILTRO POR USUÁRIO) ---
+  useEffect(() => {
+    const user = auth.currentUser;
+
+    if (!user) {
+      // Se não tiver usuário, para o carregamento
+      setLoading(false);
+      return;
+    }
+
+    // ESSA LINHA GARANTE QUE O USUÁRIO SÓ VEJA OS DADOS DELE
+    const q = query(collection(db, "orders"), where("userId", "==", user.uid));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const lista = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+
+        // Ordena: Mais recentes primeiro
+        lista.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+
+        setOrders(lista);
+        setLoading(false);
+      },
+      (error) => {
+        console.log("Erro ao buscar dados:", error);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // --- FUNÇÕES AUXILIARES ---
 
   const handleLogout = async () => {
     try {
       await AsyncStorage.removeItem("user_session");
+      auth.signOut();
       router.replace("/LoginScreen/page");
     } catch (error) {
       Alert.alert("Erro", "Não foi possível sair.");
     }
+  };
+
+  const abrirNoGPS = (lat, long) => {
+    const scheme = Platform.select({
+      ios: "maps:0,0?q=",
+      android: "geo:0,0?q=",
+    });
+    const latLng = `${lat},${long}`;
+    const label = "Local da Entrega";
+    const url = Platform.select({
+      ios: `${scheme}${label}@${latLng}`,
+      android: `${scheme}${latLng}(${label})`,
+    });
+    Linking.openURL(url);
+  };
+
+  const getCalendarId = async () => {
+    const { status } = await Calendar.requestCalendarPermissionsAsync();
+    if (status !== "granted") return null;
+
+    const defaultCalendarSource =
+      Platform.OS === "ios"
+        ? await Calendar.getDefaultCalendarSource()
+        : { isLocalAccount: true, name: "Expo Calendar" };
+
+    const calendars = await Calendar.getCalendarsAsync(
+      Calendar.EntityTypes.EVENT
+    );
+    return calendars.length > 0 ? calendars[0].id : null;
   };
 
   const onChangeDate = (event, selectedDate) => {
@@ -72,103 +151,95 @@ export default function HomeScreen() {
     setMode(currentMode);
   };
 
-  const getCalendarId = async () => {
-    const { status } = await Calendar.requestCalendarPermissionsAsync();
-    if (status !== "granted") {
-      Alert.alert("Erro", "Sem permissão de calendário");
-      return null;
-    }
-    const defaultCalendarSource =
-      Platform.OS === "ios"
-        ? await Calendar.getDefaultCalendarSource()
-        : { isLocalAccount: true, name: "Expo Calendar" };
-    const calendars = await Calendar.getCalendarsAsync(
-      Calendar.EntityTypes.EVENT
-    );
-    return calendars.length > 0 ? calendars[0].id : null;
-  };
-
-  // 1. CRIAR AGENDAMENTO
+  // --- 2. SALVAR NO BANCO (AGENDAMENTO) ---
   const confirmarAgendamento = async () => {
-    // Validação inclui o endereço agora
     if (novoPrato === "" || novoDestinatario === "" || novoEndereco === "") {
-      return Alert.alert(
-        "Atenção",
-        "Preencha todos os campos (Prato, Cliente e Endereço)."
-      );
+      return Alert.alert("Atenção", "Preencha todos os campos.");
     }
+
+    const user = auth.currentUser;
+    if (!user) return Alert.alert("Erro", "Você precisa estar logado.");
 
     const calendarId = await getCalendarId();
-    if (!calendarId) return;
+    let eventId = null;
+
+    // Tenta criar no calendário (se der erro, segue salvando no app)
+    if (calendarId) {
+      try {
+        const startDate = dataAgendamento;
+        const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
+        eventId = await Calendar.createEventAsync(calendarId, {
+          title: `Entrega: ${novoPrato}`,
+          location: novoEndereco,
+          startDate: startDate,
+          endDate: endDate,
+          timeZone: "GMT-3",
+          notes: `Cliente: ${novoDestinatario}`,
+        });
+      } catch (e) {
+        console.log("Erro ao salvar no calendário nativo (prosseguindo):", e);
+      }
+    }
 
     try {
-      const startDate = dataAgendamento;
-      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
-
-      const eventId = await Calendar.createEventAsync(calendarId, {
-        title: `Entrega: ${novoPrato} (${novoDestinatario})`,
-        location: novoEndereco, // <--- O ENDEREÇO VAI NO CAMPO LOCATION DO CALENDÁRIO
-        startDate: startDate,
-        endDate: endDate,
-        timeZone: "GMT-3",
-        notes: `Cliente: ${novoDestinatario}\nPrato: ${novoPrato}`,
-      });
-
-      const novoPedido = {
-        id: Date.now(),
-        title: `Pedido #${1000 + orders.length + 1}`,
-        desc: `${novoPrato}`,
+      // Salva no Firebase
+      await addDoc(collection(db, "orders"), {
+        userId: user.uid, // <-- IMPORTANTE: VINCULA AO USUÁRIO
+        title: `Pedido`,
+        desc: novoPrato,
         clientName: novoDestinatario,
-        address: novoEndereco, // <--- Salva o endereço no objeto
+        address: novoEndereco,
         status: "Agendado",
         photo: null,
         coords: null,
         calendarEventId: eventId,
-        dateString: startDate.toLocaleString("pt-BR", {
+        dateString: dataAgendamento.toLocaleString("pt-BR", {
           day: "2-digit",
           month: "2-digit",
           year: "2-digit",
           hour: "2-digit",
           minute: "2-digit",
         }),
-      };
+        createdAt: Date.now(),
+      });
 
-      setOrders([novoPedido, ...orders]);
       setModalAgendamentoVisible(false);
-      // Limpa os campos
       setNovoPrato("");
       setNovoDestinatario("");
       setNovoEndereco("");
       setDataAgendamento(new Date());
-      Alert.alert("Agendado!", "Evento criado no calendário com o endereço.");
+      Alert.alert("Sucesso", "Agendamento salvo!");
     } catch (e) {
       console.log(e);
-      Alert.alert("Erro", "Falha ao criar evento no calendário.");
+      Alert.alert("Erro", "Falha ao salvar no banco de dados.");
     }
   };
 
-  // 2. CANCELAR AGENDAMENTO
+  // --- 3. CANCELAR (DELETE) ---
   const cancelarEntrega = async (idPedido, eventId) => {
     try {
-      if (eventId) await Calendar.deleteEventAsync(eventId);
-      setOrders((prevOrders) => prevOrders.filter((o) => o.id !== idPedido));
-      Alert.alert("Cancelado", "Pedido removido do app e do calendário.");
+      if (eventId) {
+        try {
+          await Calendar.deleteEventAsync(eventId);
+        } catch (e) {}
+      }
+      await deleteDoc(doc(db, "orders", idPedido));
+      Alert.alert("Cancelado", "Pedido removido.");
     } catch (e) {
       console.log(e);
-      setOrders((prevOrders) => prevOrders.filter((o) => o.id !== idPedido));
+      Alert.alert("Erro", "Não foi possível cancelar.");
     }
   };
 
-  // 3. REGISTRAR ENTREGA
+  // --- 4. FINALIZAR (UPDATE) ---
   const iniciarRegistroEntrega = async (idPedido) => {
     setCurrentOrderId(idPedido);
-    if (!cameraPermission || !cameraPermission.granted) {
+    if (!cameraPermission?.granted) {
       const permission = await requestCameraPermission();
       if (!permission.granted) return Alert.alert("Precisamos da câmera!");
     }
-    let { status: locationStatus } =
-      await Location.requestForegroundPermissionsAsync();
-    if (locationStatus !== "granted")
+    let { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== "granted")
       return Alert.alert("Erro", "Sem permissão de GPS");
     setCameraVisible(true);
   };
@@ -189,29 +260,21 @@ export default function HomeScreen() {
 
         // Remove do calendário pois foi entregue
         const pedidoAtual = orders.find((o) => o.id === currentOrderId);
-        if (pedidoAtual && pedidoAtual.calendarEventId) {
+        if (pedidoAtual?.calendarEventId) {
           try {
             await Calendar.deleteEventAsync(pedidoAtual.calendarEventId);
-          } catch (calError) {
-            console.log("Erro ao apagar calendario", calError);
-          }
+          } catch (e) {}
         }
 
-        setOrders((prevOrders) =>
-          prevOrders.map((order) => {
-            if (order.id === currentOrderId) {
-              return {
-                ...order,
-                status: "Entregue",
-                photo: photo.uri,
-                coords: currentCoords,
-              };
-            }
-            return order;
-          })
-        );
+        // Atualiza no Banco
+        const pedidoRef = doc(db, "orders", currentOrderId);
+        await updateDoc(pedidoRef, {
+          status: "Entregue",
+          photo: photo.uri,
+          coords: currentCoords,
+        });
 
-        Alert.alert("Entrega Concluída!", "Foto salva e agendamento removido.");
+        Alert.alert("Sucesso", "Entrega finalizada e salva!");
       } catch (error) {
         console.log(error);
         Alert.alert("Erro", "Falha na integração.");
@@ -233,127 +296,137 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView
-        contentContainerStyle={{ paddingBottom: 100 }}
-        style={{ width: "100%" }}
-      >
-        {orders.length === 0 && (
-          <Text style={{ textAlign: "center", marginTop: 50, color: "#999" }}>
-            Nenhum pedido agendado.
-          </Text>
-        )}
-
-        {orders.map((item) => (
-          <View key={item.id} style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Text style={styles.cardTitle}>{item.title}</Text>
-              <Text
-                style={[
-                  styles.statusBadge,
-                  {
-                    color:
-                      item.status === "Entregue"
-                        ? colors.success
-                        : colors.warning,
-                  },
-                ]}
-              >
-                {item.status}
-              </Text>
-            </View>
-
-            <Text style={styles.cardText}>
-              <Text style={{ fontWeight: "bold" }}>Prato:</Text> {item.desc}
+      {loading ? (
+        <ActivityIndicator
+          size="large"
+          color={colors.secondary}
+          style={{ marginTop: 50 }}
+        />
+      ) : (
+        <ScrollView
+          contentContainerStyle={{ paddingBottom: 100 }}
+          style={{ width: "100%" }}
+        >
+          {orders.length === 0 && (
+            <Text style={{ textAlign: "center", marginTop: 50, color: "#999" }}>
+              Nenhum pedido encontrado.
             </Text>
-            <Text style={styles.cardText}>
-              <Text style={{ fontWeight: "bold" }}>Cliente:</Text>{" "}
-              {item.clientName}
-            </Text>
+          )}
 
-            {/* MOSTRA O ENDEREÇO NO CARD */}
-            <Text style={styles.cardText}>
-              <Text style={{ fontWeight: "bold" }}>📍 Endereço:</Text>{" "}
-              {item.address}
-            </Text>
-
-            {item.status === "Agendado" && (
-              <Text
-                style={{
-                  fontSize: 14,
-                  fontWeight: "bold",
-                  color: "#555",
-                  marginBottom: 10,
-                  marginTop: 5,
-                }}
-              >
-                📅 Agendado: {item.dateString}
-              </Text>
-            )}
-
-            {item.status === "Agendado" ? (
-              <View>
-                <TouchableOpacity
-                  style={[styles.actionButton, { marginBottom: 10 }]}
-                  onPress={() => iniciarRegistroEntrega(item.id)}
-                >
-                  <Text style={styles.actionButtonText}>
-                    CONFIRMAR ENTREGA (FOTO)
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
+          {orders.map((item) => (
+            <View key={item.id} style={styles.card}>
+              <View style={styles.cardHeader}>
+                <Text style={styles.cardTitle}>{item.title}</Text>
+                <Text
                   style={[
-                    styles.actionButton,
-                    { backgroundColor: colors.danger },
+                    styles.statusBadge,
+                    {
+                      color:
+                        item.status === "Entregue"
+                          ? colors.success
+                          : colors.warning,
+                    },
                   ]}
-                  onPress={() => cancelarEntrega(item.id, item.calendarEventId)}
                 >
-                  <Text style={styles.actionButtonText}>
-                    CANCELAR AGENDAMENTO
-                  </Text>
-                </TouchableOpacity>
+                  {item.status}
+                </Text>
               </View>
-            ) : (
-              <View style={styles.deliveryInfo}>
-                <Text style={styles.sectionTitle}>Comprovante de Entrega:</Text>
-                <View style={styles.proofRow}>
-                  <Image
-                    source={{ uri: item.photo }}
-                    style={styles.proofImage}
-                  />
-                  <View style={styles.miniMapContainer}>
-                    <MapView
-                      style={styles.miniMap}
-                      initialRegion={item.coords}
-                      scrollEnabled={false}
-                      zoomEnabled={false}
-                    >
-                      <Marker coordinate={item.coords} pinColor="blue" />
-                    </MapView>
+
+              <Text style={styles.cardText}>
+                <Text style={{ fontWeight: "bold" }}>Prato:</Text> {item.desc}
+              </Text>
+              <Text style={styles.cardText}>
+                <Text style={{ fontWeight: "bold" }}>Cliente:</Text>{" "}
+                {item.clientName}
+              </Text>
+              <Text style={styles.cardText}>
+                <Text style={{ fontWeight: "bold" }}>📍 Endereço:</Text>{" "}
+                {item.address}
+              </Text>
+
+              {item.status === "Agendado" && (
+                <Text
+                  style={{
+                    fontSize: 14,
+                    fontWeight: "bold",
+                    color: "#555",
+                    marginBottom: 10,
+                    marginTop: 5,
+                  }}
+                >
+                  📅 Agendado: {item.dateString}
+                </Text>
+              )}
+
+              {item.status === "Agendado" ? (
+                <View>
+                  <TouchableOpacity
+                    style={[styles.actionButton, { marginBottom: 10 }]}
+                    onPress={() => iniciarRegistroEntrega(item.id)}
+                  >
+                    <Text style={styles.actionButtonText}>
+                      CONFIRMAR ENTREGA (FOTO)
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.actionButton,
+                      { backgroundColor: colors.danger },
+                    ]}
+                    onPress={() =>
+                      cancelarEntrega(item.id, item.calendarEventId)
+                    }
+                  >
+                    <Text style={styles.actionButtonText}>
+                      CANCELAR AGENDAMENTO
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.deliveryInfo}>
+                  <Text style={styles.sectionTitle}>
+                    Comprovante de Entrega:
+                  </Text>
+                  <View style={styles.proofRow}>
+                    <Image
+                      source={{ uri: item.photo }}
+                      style={styles.proofImage}
+                    />
+                    <View style={styles.gpsContainer}>
+                      <Text style={styles.gpsText}>Localização Capturada:</Text>
+                      {item.coords && (
+                        <Text style={{ fontSize: 10, color: "#555" }}>
+                          {item.coords.latitude.toFixed(4)},{" "}
+                          {item.coords.longitude.toFixed(4)}
+                        </Text>
+                      )}
+                      <TouchableOpacity
+                        style={styles.gpsButton}
+                        onPress={() =>
+                          item.coords &&
+                          abrirNoGPS(
+                            item.coords.latitude,
+                            item.coords.longitude
+                          )
+                        }
+                      >
+                        <Text style={styles.gpsButtonText}>
+                          ABRIR NO MAPA 🗺️
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
                 </View>
-                <View style={{ marginTop: 10, alignItems: "center" }}>
-                  <Text style={{ color: "#666", fontSize: 12 }}>
-                    Localização capturada:
-                  </Text>
-                  <Text style={styles.coordsText}>
-                    Lat: {item.coords.latitude.toFixed(5)}
-                  </Text>
-                  <Text style={styles.coordsText}>
-                    Long: {item.coords.longitude.toFixed(5)}
-                  </Text>
-                </View>
-              </View>
-            )}
-          </View>
-        ))}
-      </ScrollView>
+              )}
+            </View>
+          ))}
+        </ScrollView>
+      )}
 
       <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
         <Text style={styles.logoutText}>SAIR DA CONTA</Text>
       </TouchableOpacity>
 
-      {/* --- MODAL DE AGENDAMENTO --- */}
       <Modal
         visible={modalAgendamentoVisible}
         animationType="slide"
@@ -362,22 +435,18 @@ export default function HomeScreen() {
         <View style={styles.modalCenter}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Novo Agendamento</Text>
-
             <TextInput
               style={styles.input}
               placeholder="Nome do Prato / Pedido"
               value={novoPrato}
               onChangeText={setNovoPrato}
             />
-
             <TextInput
               style={styles.input}
               placeholder="Nome do Destinatário"
               value={novoDestinatario}
               onChangeText={setNovoDestinatario}
             />
-
-            {/* --- CAMPO DE ENDEREÇO --- */}
             <TextInput
               style={styles.input}
               placeholder="Endereço de Entrega"
@@ -386,7 +455,6 @@ export default function HomeScreen() {
             />
 
             <Text style={styles.label}>Escolha a Data e Hora:</Text>
-
             <View style={styles.dateRow}>
               <TouchableOpacity
                 style={styles.dateButton}
@@ -394,7 +462,6 @@ export default function HomeScreen() {
               >
                 <Text style={styles.dateButtonText}>📅 Data</Text>
               </TouchableOpacity>
-
               <TouchableOpacity
                 style={styles.dateButton}
                 onPress={() => showMode("time")}
@@ -402,7 +469,6 @@ export default function HomeScreen() {
                 <Text style={styles.dateButtonText}>⏰ Hora</Text>
               </TouchableOpacity>
             </View>
-
             <Text style={styles.selectedDateText}>
               Selecionado: {dataAgendamento.toLocaleString()}
             </Text>
@@ -422,9 +488,8 @@ export default function HomeScreen() {
               style={styles.modalButton}
               onPress={confirmarAgendamento}
             >
-              <Text style={styles.modalButtonText}>SALVAR NO CALENDÁRIO</Text>
+              <Text style={styles.modalButtonText}>SALVAR NO BANCO</Text>
             </TouchableOpacity>
-
             <TouchableOpacity
               style={styles.modalClose}
               onPress={() => setModalAgendamentoVisible(false)}
@@ -476,7 +541,6 @@ const styles = StyleSheet.create({
     marginTop: 20,
   },
   headerTitle: { fontSize: 24, fontWeight: "bold", color: colors.secondary },
-
   addButton: {
     backgroundColor: colors.success,
     paddingVertical: 10,
@@ -485,7 +549,6 @@ const styles = StyleSheet.create({
     elevation: 5,
   },
   addButtonText: { color: "#FFF", fontWeight: "bold", fontSize: 12 },
-
   card: {
     width: "100%",
     backgroundColor: "#E0F7FA",
@@ -504,7 +567,6 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 18, fontWeight: "bold", color: colors.secondary },
   statusBadge: { fontWeight: "bold", fontSize: 14 },
   cardText: { fontSize: 16, color: "#555", marginBottom: 5 },
-
   deliveryInfo: {
     backgroundColor: "rgba(255,255,255,0.6)",
     padding: 10,
@@ -519,6 +581,7 @@ const styles = StyleSheet.create({
   proofRow: {
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "center",
     height: 100,
   },
   proofImage: {
@@ -527,22 +590,32 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: "#ddd",
   },
-  miniMapContainer: {
+  gpsContainer: {
     width: "48%",
     height: "100%",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 5,
+    backgroundColor: "#FFF",
     borderRadius: 8,
-    overflow: "hidden",
     borderWidth: 1,
-    borderColor: "#ccc",
+    borderColor: "#DDD",
   },
-  miniMap: { width: "100%", height: "100%" },
-  coordsText: {
-    fontSize: 14,
-    color: "#333",
+  gpsText: {
+    fontSize: 10,
     fontWeight: "bold",
+    color: colors.secondary,
+    marginBottom: 5,
     textAlign: "center",
   },
-
+  gpsButton: {
+    marginTop: 5,
+    backgroundColor: colors.secondary,
+    paddingVertical: 5,
+    paddingHorizontal: 8,
+    borderRadius: 5,
+  },
+  gpsButtonText: { color: "#FFF", fontSize: 10, fontWeight: "bold" },
   actionButton: {
     backgroundColor: colors.secondary,
     paddingVertical: 12,
@@ -550,7 +623,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   actionButtonText: { color: "#FFF", fontWeight: "bold", fontSize: 14 },
-
   logoutButton: {
     width: "100%",
     padding: 15,
@@ -562,8 +634,6 @@ const styles = StyleSheet.create({
     borderColor: colors.danger,
   },
   logoutText: { color: colors.danger, fontWeight: "bold", fontSize: 16 },
-
-  // ESTILOS DO MODAL
   modalCenter: {
     flex: 1,
     justifyContent: "center",
@@ -600,7 +670,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     marginTop: 5,
   },
-
   dateRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -621,7 +690,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     fontSize: 16,
   },
-
   modalButton: {
     backgroundColor: colors.success,
     paddingVertical: 15,
@@ -633,7 +701,6 @@ const styles = StyleSheet.create({
   },
   modalButtonText: { color: "#FFF", fontWeight: "bold" },
   modalClose: { padding: 10 },
-
   cameraOverlay: {
     flex: 1,
     backgroundColor: "transparent",
