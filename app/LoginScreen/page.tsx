@@ -1,21 +1,24 @@
 // @ts-nocheck
-import React, { useState, useEffect } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useRouter } from "expo-router";
+import React, { useEffect, useState } from "react";
 import {
-  View,
+  ActivityIndicator,
+  Alert,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  StyleSheet,
-  Alert,
+  View,
 } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { useRouter } from "expo-router";
 
 // Cores diretas para facilitar
 const colors = { primary: "#4FC3F7", secondary: "#0288D1" };
 
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [loading, setLoading] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
@@ -28,11 +31,38 @@ export default function LoginScreen() {
   };
 
   const handleLogin = async () => {
-    if (email.length > 3) {
-      await AsyncStorage.setItem("user_session", email);
+    if (!email || !senha) {
+      Alert.alert("Erro", "Preencha todos os campos.");
+      return;
+    }
+      // Mock login para testes sem backend
+    if(email == 'test@test.com' && senha == 'test'){
+      await AsyncStorage.setItem("user_session", JSON.stringify({email: 'test'}));
       router.replace("/HomePage/page");
-    } else {
-      Alert.alert("Erro", "Digite um e-mail válido.");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch("http://192.168.0.24:4000/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password: senha }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        await AsyncStorage.setItem("user_session", JSON.stringify(data));
+        router.replace("/HomePage/page");
+      } else {
+        Alert.alert("Erro", data.message || "Credenciais inválidas.");
+      }
+    } catch (error) {
+      Alert.alert("Erro", "Não foi possível conectar ao servidor.");
+      console.error(error);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -51,17 +81,31 @@ export default function LoginScreen() {
         value={email}
         onChangeText={setEmail}
         placeholderTextColor="#999"
+        keyboardType="email-address"
+        autoCapitalize="none"
+        editable={!loading}
       />
 
       <TextInput
         style={styles.input}
         placeholder="Sua senha"
+        value={senha}
+        onChangeText={setSenha}
         secureTextEntry
         placeholderTextColor="#999"
+        editable={!loading}
       />
 
-      <TouchableOpacity style={styles.button} onPress={handleLogin}>
-        <Text style={styles.buttonText}>ENTRAR</Text>
+      <TouchableOpacity
+        style={[styles.button, loading && styles.buttonDisabled]}
+        onPress={handleLogin}
+        disabled={loading}
+      >
+        {loading ? (
+          <ActivityIndicator color="#FFF" />
+        ) : (
+          <Text style={styles.buttonText}>ENTRAR</Text>
+        )}
       </TouchableOpacity>
     </View>
   );
@@ -101,6 +145,9 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     justifyContent: "center",
     alignItems: "center",
+  },
+  buttonDisabled: {
+    opacity: 0.6,
   },
   buttonText: { color: "#FFF", fontWeight: "bold", fontSize: 16 },
 });

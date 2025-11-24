@@ -18,9 +18,16 @@ import * as Calendar from "expo-calendar";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useRouter } from "expo-router";
 import MapView, { Marker } from "react-native-maps";
-import DateTimePicker from '@react-native-community/datetimepicker';
+import DateTimePicker from "@react-native-community/datetimepicker";
 
-const colors = { primary: "#4FC3F7", secondary: "#0288D1", danger: "#FF5252", success: "#4CAF50", warning: "#FF9800", gray: "#E0E0E0" };
+const colors = {
+  primary: "#4FC3F7",
+  secondary: "#0288D1",
+  danger: "#FF5252",
+  success: "#4CAF50",
+  warning: "#FF9800",
+  gray: "#E0E0E0",
+};
 
 export default function HomeScreen() {
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
@@ -36,10 +43,11 @@ export default function HomeScreen() {
   const [modalAgendamentoVisible, setModalAgendamentoVisible] = useState(false);
   const [novoPrato, setNovoPrato] = useState("");
   const [novoDestinatario, setNovoDestinatario] = useState("");
-  
+  const [novoEndereco, setNovoEndereco] = useState(""); // <--- NOVO ESTADO
+
   const [dataAgendamento, setDataAgendamento] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
-  const [mode, setMode] = useState('date');
+  const [mode, setMode] = useState("date");
 
   // --- FUNÇÕES ---
 
@@ -54,9 +62,9 @@ export default function HomeScreen() {
 
   const onChangeDate = (event, selectedDate) => {
     const currentDate = selectedDate || dataAgendamento;
-    setShowPicker(Platform.OS === 'ios'); 
+    setShowPicker(Platform.OS === "ios");
     setDataAgendamento(currentDate);
-    if(Platform.OS === 'android') setShowPicker(false); 
+    if (Platform.OS === "android") setShowPicker(false);
   };
 
   const showMode = (currentMode) => {
@@ -70,17 +78,24 @@ export default function HomeScreen() {
       Alert.alert("Erro", "Sem permissão de calendário");
       return null;
     }
-    const defaultCalendarSource = Platform.OS === "ios"
-      ? await Calendar.getDefaultCalendarSource()
-      : { isLocalAccount: true, name: "Expo Calendar" };
-    const calendars = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
+    const defaultCalendarSource =
+      Platform.OS === "ios"
+        ? await Calendar.getDefaultCalendarSource()
+        : { isLocalAccount: true, name: "Expo Calendar" };
+    const calendars = await Calendar.getCalendarsAsync(
+      Calendar.EntityTypes.EVENT
+    );
     return calendars.length > 0 ? calendars[0].id : null;
   };
 
   // 1. CRIAR AGENDAMENTO
   const confirmarAgendamento = async () => {
-    if (novoPrato === "" || novoDestinatario === "") {
-      return Alert.alert("Atenção", "Preencha o prato e o destinatário.");
+    // Validação inclui o endereço agora
+    if (novoPrato === "" || novoDestinatario === "" || novoEndereco === "") {
+      return Alert.alert(
+        "Atenção",
+        "Preencha todos os campos (Prato, Cliente e Endereço)."
+      );
     }
 
     const calendarId = await getCalendarId();
@@ -88,35 +103,44 @@ export default function HomeScreen() {
 
     try {
       const startDate = dataAgendamento;
-      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); 
+      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000);
 
       const eventId = await Calendar.createEventAsync(calendarId, {
-        title: `Entrega: ${novoPrato}`,
-        location: `Cliente: ${novoDestinatario}`,
+        title: `Entrega: ${novoPrato} (${novoDestinatario})`,
+        location: novoEndereco, // <--- O ENDEREÇO VAI NO CAMPO LOCATION DO CALENDÁRIO
         startDate: startDate,
         endDate: endDate,
         timeZone: "GMT-3",
-        notes: "Agendado pelo App de Delivery",
+        notes: `Cliente: ${novoDestinatario}\nPrato: ${novoPrato}`,
       });
 
       const novoPedido = {
         id: Date.now(),
         title: `Pedido #${1000 + orders.length + 1}`,
-        desc: `${novoPrato} (Para: ${novoDestinatario})`,
+        desc: `${novoPrato}`,
+        clientName: novoDestinatario,
+        address: novoEndereco, // <--- Salva o endereço no objeto
         status: "Agendado",
         photo: null,
         coords: null,
         calendarEventId: eventId,
-        dateString: startDate.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' })
+        dateString: startDate.toLocaleString("pt-BR", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
       };
 
       setOrders([novoPedido, ...orders]);
       setModalAgendamentoVisible(false);
+      // Limpa os campos
       setNovoPrato("");
       setNovoDestinatario("");
-      setDataAgendamento(new Date()); 
-      Alert.alert("Agendado!", "Evento criado no calendário com sucesso.");
-
+      setNovoEndereco("");
+      setDataAgendamento(new Date());
+      Alert.alert("Agendado!", "Evento criado no calendário com o endereço.");
     } catch (e) {
       console.log(e);
       Alert.alert("Erro", "Falha ao criar evento no calendário.");
@@ -127,71 +151,67 @@ export default function HomeScreen() {
   const cancelarEntrega = async (idPedido, eventId) => {
     try {
       if (eventId) await Calendar.deleteEventAsync(eventId);
-      setOrders(prevOrders => prevOrders.filter(o => o.id !== idPedido));
+      setOrders((prevOrders) => prevOrders.filter((o) => o.id !== idPedido));
       Alert.alert("Cancelado", "Pedido removido do app e do calendário.");
     } catch (e) {
-        console.log(e);
-        setOrders(prevOrders => prevOrders.filter(o => o.id !== idPedido));
+      console.log(e);
+      setOrders((prevOrders) => prevOrders.filter((o) => o.id !== idPedido));
     }
   };
 
-  // 3. REGISTRAR ENTREGA (FOTO + REMOVER DO CALENDÁRIO)
+  // 3. REGISTRAR ENTREGA
   const iniciarRegistroEntrega = async (idPedido) => {
     setCurrentOrderId(idPedido);
     if (!cameraPermission || !cameraPermission.granted) {
       const permission = await requestCameraPermission();
       if (!permission.granted) return Alert.alert("Precisamos da câmera!");
     }
-    let { status: locationStatus } = await Location.requestForegroundPermissionsAsync();
-    if (locationStatus !== "granted") return Alert.alert("Erro", "Sem permissão de GPS");
+    let { status: locationStatus } =
+      await Location.requestForegroundPermissionsAsync();
+    if (locationStatus !== "granted")
+      return Alert.alert("Erro", "Sem permissão de GPS");
     setCameraVisible(true);
   };
 
   const tirarFotoEIntegrar = async () => {
     if (cameraRef.current && currentOrderId) {
       try {
-        // A. Tira a Foto
         const photo = await cameraRef.current.takePictureAsync();
         setCameraVisible(false);
 
-        // B. Pega Localização
         let location = await Location.getCurrentPositionAsync({});
         const currentCoords = {
-            latitude: location.coords.latitude,
-            longitude: location.coords.longitude,
-            latitudeDelta: 0.005, 
-            longitudeDelta: 0.005,
+          latitude: location.coords.latitude,
+          longitude: location.coords.longitude,
+          latitudeDelta: 0.005,
+          longitudeDelta: 0.005,
         };
-        
-        // --- NOVO: REMOVER O EVENTO DO CALENDÁRIO ---
-        // 1. Encontra o pedido atual na lista
-        const pedidoAtual = orders.find(o => o.id === currentOrderId);
-        
-        // 2. Se ele tiver um evento agendado, apaga do celular
+
+        // Remove do calendário pois foi entregue
+        const pedidoAtual = orders.find((o) => o.id === currentOrderId);
         if (pedidoAtual && pedidoAtual.calendarEventId) {
-            try {
-                await Calendar.deleteEventAsync(pedidoAtual.calendarEventId);
-                console.log("Evento do calendário removido pois a entrega foi feita.");
-            } catch (calError) {
-                console.log("Erro ao tentar apagar do calendário (pode já ter sido apagado):", calError);
-            }
+          try {
+            await Calendar.deleteEventAsync(pedidoAtual.calendarEventId);
+          } catch (calError) {
+            console.log("Erro ao apagar calendario", calError);
+          }
         }
 
-        // C. Atualiza o Status no App para "Entregue"
-        setOrders(prevOrders => prevOrders.map(order => {
+        setOrders((prevOrders) =>
+          prevOrders.map((order) => {
             if (order.id === currentOrderId) {
-                return { 
-                    ...order, 
-                    status: "Entregue", 
-                    photo: photo.uri, 
-                    coords: currentCoords,
-                };
+              return {
+                ...order,
+                status: "Entregue",
+                photo: photo.uri,
+                coords: currentCoords,
+              };
             }
             return order;
-        }));
+          })
+        );
 
-        Alert.alert("Entrega Concluída!", "A foto foi salva e o agendamento removido do seu calendário.");
-
+        Alert.alert("Entrega Concluída!", "Foto salva e agendamento removido.");
       } catch (error) {
         console.log(error);
         Alert.alert("Erro", "Falha na integração.");
@@ -203,79 +223,129 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      
       <View style={styles.headerActions}>
         <Text style={styles.headerTitle}>Meus Pedidos</Text>
-        <TouchableOpacity style={styles.addButton} onPress={() => setModalAgendamentoVisible(true)}>
-            <Text style={styles.addButtonText}>+ Agendar Entrega</Text>
+        <TouchableOpacity
+          style={styles.addButton}
+          onPress={() => setModalAgendamentoVisible(true)}
+        >
+          <Text style={styles.addButtonText}>+ Agendar Entrega</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={{ paddingBottom: 100 }} style={{width: '100%'}}>
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: 100 }}
+        style={{ width: "100%" }}
+      >
         {orders.length === 0 && (
-            <Text style={{textAlign: 'center', marginTop: 50, color: '#999'}}>Nenhum pedido agendado.</Text>
+          <Text style={{ textAlign: "center", marginTop: 50, color: "#999" }}>
+            Nenhum pedido agendado.
+          </Text>
         )}
 
         {orders.map((item) => (
-            <View key={item.id} style={styles.card}>
-                <View style={styles.cardHeader}>
-                    <Text style={styles.cardTitle}>{item.title}</Text>
-                    <Text style={[
-                        styles.statusBadge, 
-                        { color: item.status === 'Entregue' ? colors.success : colors.warning }
-                    ]}>
-                        {item.status}
-                    </Text>
-                </View>
-                
-                <Text style={styles.cardText}>{item.desc}</Text>
-                
-                {item.status === "Agendado" && (
-                    <Text style={{fontSize: 14, fontWeight: 'bold', color: '#555', marginBottom: 10}}>
-                        📅 Data: {item.dateString}
-                    </Text>
-                )}
-
-                {item.status === "Agendado" ? (
-                    <View>
-                        <TouchableOpacity
-                            style={[styles.actionButton, {marginBottom: 10}]}
-                            onPress={() => iniciarRegistroEntrega(item.id)}
-                        >
-                            <Text style={styles.actionButtonText}>CONFIRMAR ENTREGA (FOTO)</Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                            style={[styles.actionButton, { backgroundColor: colors.danger }]}
-                            onPress={() => cancelarEntrega(item.id, item.calendarEventId)}
-                        >
-                            <Text style={styles.actionButtonText}>CANCELAR AGENDAMENTO</Text>
-                        </TouchableOpacity>
-                    </View>
-                ) : (
-                   <View style={styles.deliveryInfo}>
-                        <Text style={styles.sectionTitle}>Comprovante de Entrega:</Text>
-                        <View style={styles.proofRow}>
-                            <Image source={{ uri: item.photo }} style={styles.proofImage} />
-                            <View style={styles.miniMapContainer}>
-                                <MapView 
-                                    style={styles.miniMap}
-                                    initialRegion={item.coords}
-                                    scrollEnabled={false}
-                                    zoomEnabled={false}
-                                >
-                                    <Marker coordinate={item.coords} pinColor="blue" />
-                                </MapView>
-                            </View>
-                        </View>
-                        <View style={{marginTop: 10, alignItems: 'center'}}>
-                            <Text style={{color: '#666', fontSize: 12}}>Localização capturada:</Text>
-                            <Text style={styles.coordsText}>Lat: {item.coords.latitude.toFixed(5)}</Text>
-                            <Text style={styles.coordsText}>Long: {item.coords.longitude.toFixed(5)}</Text>
-                        </View>
-                    </View>
-                )}
+          <View key={item.id} style={styles.card}>
+            <View style={styles.cardHeader}>
+              <Text style={styles.cardTitle}>{item.title}</Text>
+              <Text
+                style={[
+                  styles.statusBadge,
+                  {
+                    color:
+                      item.status === "Entregue"
+                        ? colors.success
+                        : colors.warning,
+                  },
+                ]}
+              >
+                {item.status}
+              </Text>
             </View>
+
+            <Text style={styles.cardText}>
+              <Text style={{ fontWeight: "bold" }}>Prato:</Text> {item.desc}
+            </Text>
+            <Text style={styles.cardText}>
+              <Text style={{ fontWeight: "bold" }}>Cliente:</Text>{" "}
+              {item.clientName}
+            </Text>
+
+            {/* MOSTRA O ENDEREÇO NO CARD */}
+            <Text style={styles.cardText}>
+              <Text style={{ fontWeight: "bold" }}>📍 Endereço:</Text>{" "}
+              {item.address}
+            </Text>
+
+            {item.status === "Agendado" && (
+              <Text
+                style={{
+                  fontSize: 14,
+                  fontWeight: "bold",
+                  color: "#555",
+                  marginBottom: 10,
+                  marginTop: 5,
+                }}
+              >
+                📅 Agendado: {item.dateString}
+              </Text>
+            )}
+
+            {item.status === "Agendado" ? (
+              <View>
+                <TouchableOpacity
+                  style={[styles.actionButton, { marginBottom: 10 }]}
+                  onPress={() => iniciarRegistroEntrega(item.id)}
+                >
+                  <Text style={styles.actionButtonText}>
+                    CONFIRMAR ENTREGA (FOTO)
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.actionButton,
+                    { backgroundColor: colors.danger },
+                  ]}
+                  onPress={() => cancelarEntrega(item.id, item.calendarEventId)}
+                >
+                  <Text style={styles.actionButtonText}>
+                    CANCELAR AGENDAMENTO
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.deliveryInfo}>
+                <Text style={styles.sectionTitle}>Comprovante de Entrega:</Text>
+                <View style={styles.proofRow}>
+                  <Image
+                    source={{ uri: item.photo }}
+                    style={styles.proofImage}
+                  />
+                  <View style={styles.miniMapContainer}>
+                    <MapView
+                      style={styles.miniMap}
+                      initialRegion={item.coords}
+                      scrollEnabled={false}
+                      zoomEnabled={false}
+                    >
+                      <Marker coordinate={item.coords} pinColor="blue" />
+                    </MapView>
+                  </View>
+                </View>
+                <View style={{ marginTop: 10, alignItems: "center" }}>
+                  <Text style={{ color: "#666", fontSize: 12 }}>
+                    Localização capturada:
+                  </Text>
+                  <Text style={styles.coordsText}>
+                    Lat: {item.coords.latitude.toFixed(5)}
+                  </Text>
+                  <Text style={styles.coordsText}>
+                    Long: {item.coords.longitude.toFixed(5)}
+                  </Text>
+                </View>
+              </View>
+            )}
+          </View>
         ))}
       </ScrollView>
 
@@ -284,70 +354,102 @@ export default function HomeScreen() {
       </TouchableOpacity>
 
       {/* --- MODAL DE AGENDAMENTO --- */}
-      <Modal visible={modalAgendamentoVisible} animationType="slide" transparent={true}>
+      <Modal
+        visible={modalAgendamentoVisible}
+        animationType="slide"
+        transparent={true}
+      >
         <View style={styles.modalCenter}>
-            <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Novo Agendamento</Text>
-                
-                <TextInput 
-                    style={styles.input} 
-                    placeholder="Nome do Prato / Pedido"
-                    value={novoPrato}
-                    onChangeText={setNovoPrato}
-                />
-                
-                <TextInput 
-                    style={styles.input} 
-                    placeholder="Nome do Destinatário"
-                    value={novoDestinatario}
-                    onChangeText={setNovoDestinatario}
-                />
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Novo Agendamento</Text>
 
-                <Text style={styles.label}>Escolha a Data e Hora:</Text>
-                
-                <View style={styles.dateRow}>
-                    <TouchableOpacity style={styles.dateButton} onPress={() => showMode('date')}>
-                        <Text style={styles.dateButtonText}>📅 Data</Text>
-                    </TouchableOpacity>
-                    
-                    <TouchableOpacity style={styles.dateButton} onPress={() => showMode('time')}>
-                        <Text style={styles.dateButtonText}>⏰ Hora</Text>
-                    </TouchableOpacity>
-                </View>
+            <TextInput
+              style={styles.input}
+              placeholder="Nome do Prato / Pedido"
+              value={novoPrato}
+              onChangeText={setNovoPrato}
+            />
 
-                <Text style={styles.selectedDateText}>
-                    Selecionado: {dataAgendamento.toLocaleString()}
-                </Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Nome do Destinatário"
+              value={novoDestinatario}
+              onChangeText={setNovoDestinatario}
+            />
 
-                {showPicker && (
-                    <DateTimePicker
-                        testID="dateTimePicker"
-                        value={dataAgendamento}
-                        mode={mode}
-                        is24Hour={true}
-                        display="default"
-                        onChange={onChangeDate}
-                    />
-                )}
+            {/* --- CAMPO DE ENDEREÇO --- */}
+            <TextInput
+              style={styles.input}
+              placeholder="Endereço de Entrega"
+              value={novoEndereco}
+              onChangeText={setNovoEndereco}
+            />
 
-                <TouchableOpacity style={styles.modalButton} onPress={confirmarAgendamento}>
-                    <Text style={styles.modalButtonText}>SALVAR NO CALENDÁRIO</Text>
-                </TouchableOpacity>
+            <Text style={styles.label}>Escolha a Data e Hora:</Text>
 
-                <TouchableOpacity style={styles.modalClose} onPress={() => setModalAgendamentoVisible(false)}>
-                    <Text style={{color: '#666'}}>Fechar</Text>
-                </TouchableOpacity>
+            <View style={styles.dateRow}>
+              <TouchableOpacity
+                style={styles.dateButton}
+                onPress={() => showMode("date")}
+              >
+                <Text style={styles.dateButtonText}>📅 Data</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.dateButton}
+                onPress={() => showMode("time")}
+              >
+                <Text style={styles.dateButtonText}>⏰ Hora</Text>
+              </TouchableOpacity>
             </View>
+
+            <Text style={styles.selectedDateText}>
+              Selecionado: {dataAgendamento.toLocaleString()}
+            </Text>
+
+            {showPicker && (
+              <DateTimePicker
+                testID="dateTimePicker"
+                value={dataAgendamento}
+                mode={mode}
+                is24Hour={true}
+                display="default"
+                onChange={onChangeDate}
+              />
+            )}
+
+            <TouchableOpacity
+              style={styles.modalButton}
+              onPress={confirmarAgendamento}
+            >
+              <Text style={styles.modalButtonText}>SALVAR NO CALENDÁRIO</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.modalClose}
+              onPress={() => setModalAgendamentoVisible(false)}
+            >
+              <Text style={{ color: "#666" }}>Fechar</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </Modal>
 
       <Modal visible={cameraVisible} animationType="slide">
         <CameraView style={{ flex: 1 }} ref={cameraRef}>
           <View style={styles.cameraOverlay}>
-            <TouchableOpacity style={styles.captureButton} onPress={tirarFotoEIntegrar}>
-              <Text style={{ color: "white", fontWeight: 'bold' }}>FOTOGRAFAR</Text>
+            <TouchableOpacity
+              style={styles.captureButton}
+              onPress={tirarFotoEIntegrar}
+            >
+              <Text style={{ color: "white", fontWeight: "bold" }}>
+                FOTOGRAFAR
+              </Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.closeButton} onPress={() => setCameraVisible(false)}>
+            <TouchableOpacity
+              style={styles.closeButton}
+              onPress={() => setCameraVisible(false)}
+            >
               <Text style={{ color: "white" }}>CANCELAR</Text>
             </TouchableOpacity>
           </View>
@@ -366,15 +468,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   headerActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    width: '100%',
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    width: "100%",
     marginBottom: 20,
     marginTop: 20,
   },
-  headerTitle: { fontSize: 24, fontWeight: 'bold', color: colors.secondary },
-  
+  headerTitle: { fontSize: 24, fontWeight: "bold", color: colors.secondary },
+
   addButton: {
     backgroundColor: colors.success,
     paddingVertical: 10,
@@ -382,7 +484,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     elevation: 5,
   },
-  addButtonText: { color: '#FFF', fontWeight: 'bold', fontSize: 12 },
+  addButtonText: { color: "#FFF", fontWeight: "bold", fontSize: 12 },
 
   card: {
     width: "100%",
@@ -394,18 +496,52 @@ const styles = StyleSheet.create({
     borderColor: colors.primary,
     elevation: 3,
   },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5 },
+  cardHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    marginBottom: 5,
+  },
   cardTitle: { fontSize: 18, fontWeight: "bold", color: colors.secondary },
-  statusBadge: { fontWeight: 'bold', fontSize: 14 },
+  statusBadge: { fontWeight: "bold", fontSize: 14 },
   cardText: { fontSize: 16, color: "#555", marginBottom: 5 },
-  
-  deliveryInfo: { backgroundColor: 'rgba(255,255,255,0.6)', padding: 10, borderRadius: 10 },
-  sectionTitle: { fontSize: 14, fontWeight: 'bold', color: colors.secondary, marginBottom: 5 },
-  proofRow: { flexDirection: 'row', justifyContent: 'space-between', height: 100 },
-  proofImage: { width: '48%', height: '100%', borderRadius: 8, backgroundColor: '#ddd' },
-  miniMapContainer: { width: '48%', height: '100%', borderRadius: 8, overflow: 'hidden', borderWidth: 1, borderColor: '#ccc' },
-  miniMap: { width: '100%', height: '100%' },
-  coordsText: { fontSize: 14, color: '#333', fontWeight: 'bold', textAlign: 'center' },
+
+  deliveryInfo: {
+    backgroundColor: "rgba(255,255,255,0.6)",
+    padding: 10,
+    borderRadius: 10,
+  },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: "bold",
+    color: colors.secondary,
+    marginBottom: 5,
+  },
+  proofRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    height: 100,
+  },
+  proofImage: {
+    width: "48%",
+    height: "100%",
+    borderRadius: 8,
+    backgroundColor: "#ddd",
+  },
+  miniMapContainer: {
+    width: "48%",
+    height: "100%",
+    borderRadius: 8,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: "#ccc",
+  },
+  miniMap: { width: "100%", height: "100%" },
+  coordsText: {
+    fontSize: 14,
+    color: "#333",
+    fontWeight: "bold",
+    textAlign: "center",
+  },
 
   actionButton: {
     backgroundColor: colors.secondary,
@@ -416,11 +552,11 @@ const styles = StyleSheet.create({
   actionButtonText: { color: "#FFF", fontWeight: "bold", fontSize: 14 },
 
   logoutButton: {
-    width: '100%',
+    width: "100%",
     padding: 15,
-    backgroundColor: '#FFEBEE',
+    backgroundColor: "#FFEBEE",
     borderRadius: 10,
-    alignItems: 'center',
+    alignItems: "center",
     marginBottom: 20,
     borderWidth: 1,
     borderColor: colors.danger,
@@ -428,22 +564,89 @@ const styles = StyleSheet.create({
   logoutText: { color: colors.danger, fontWeight: "bold", fontSize: 16 },
 
   // ESTILOS DO MODAL
-  modalCenter: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)' },
-  modalContent: { width: '85%', backgroundColor: '#FFF', borderRadius: 20, padding: 20, alignItems: 'center', elevation: 10 },
-  modalTitle: { fontSize: 20, fontWeight: 'bold', color: colors.secondary, marginBottom: 20 },
-  input: { width: '100%', height: 50, borderWidth: 1, borderColor: '#DDD', borderRadius: 10, marginBottom: 15, paddingHorizontal: 10, backgroundColor: '#F9F9F9' },
-  label: { alignSelf: 'flex-start', color: '#555', fontWeight: 'bold', marginTop: 5 },
-  
-  dateRow: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginVertical: 10 },
-  dateButton: { backgroundColor: colors.gray, padding: 10, borderRadius: 8, width: '48%', alignItems: 'center' },
-  dateButtonText: { fontWeight: 'bold', color: '#333' },
-  selectedDateText: { marginVertical: 10, color: colors.secondary, fontWeight: 'bold', fontSize: 16 },
+  modalCenter: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.5)",
+  },
+  modalContent: {
+    width: "85%",
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    padding: 20,
+    alignItems: "center",
+    elevation: 10,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: colors.secondary,
+    marginBottom: 20,
+  },
+  input: {
+    width: "100%",
+    height: 50,
+    borderWidth: 1,
+    borderColor: "#DDD",
+    borderRadius: 10,
+    marginBottom: 15,
+    paddingHorizontal: 10,
+    backgroundColor: "#F9F9F9",
+  },
+  label: {
+    alignSelf: "flex-start",
+    color: "#555",
+    fontWeight: "bold",
+    marginTop: 5,
+  },
 
-  modalButton: { backgroundColor: colors.success, paddingVertical: 15, borderRadius: 10, width: '100%', alignItems: 'center', marginTop: 10, marginBottom: 10 },
-  modalButtonText: { color: '#FFF', fontWeight: 'bold' },
+  dateRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    width: "100%",
+    marginVertical: 10,
+  },
+  dateButton: {
+    backgroundColor: colors.gray,
+    padding: 10,
+    borderRadius: 8,
+    width: "48%",
+    alignItems: "center",
+  },
+  dateButtonText: { fontWeight: "bold", color: "#333" },
+  selectedDateText: {
+    marginVertical: 10,
+    color: colors.secondary,
+    fontWeight: "bold",
+    fontSize: 16,
+  },
+
+  modalButton: {
+    backgroundColor: colors.success,
+    paddingVertical: 15,
+    borderRadius: 10,
+    width: "100%",
+    alignItems: "center",
+    marginTop: 10,
+    marginBottom: 10,
+  },
+  modalButtonText: { color: "#FFF", fontWeight: "bold" },
   modalClose: { padding: 10 },
 
-  cameraOverlay: { flex: 1, backgroundColor: "transparent", justifyContent: "flex-end", alignItems: "center", marginBottom: 40 },
-  captureButton: { backgroundColor: colors.secondary, paddingHorizontal: 30, paddingVertical: 20, borderRadius: 50, marginBottom: 20 },
+  cameraOverlay: {
+    flex: 1,
+    backgroundColor: "transparent",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    marginBottom: 40,
+  },
+  captureButton: {
+    backgroundColor: colors.secondary,
+    paddingHorizontal: 30,
+    paddingVertical: 20,
+    borderRadius: 50,
+    marginBottom: 20,
+  },
   closeButton: { backgroundColor: "#555", padding: 10, borderRadius: 20 },
 });
