@@ -1,15 +1,22 @@
 {
   "expo": {
-    "name": "prova",
-    "slug": "prova",
+    "name": "App Eulaliane",
+    "slug": "appeulaliane",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "prova",
+    "scheme": "appeulaliane",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pencola.appeulaliane",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Precisamos da câmera para registrar a entrega.",
+        "NSLocationWhenInUseUsageDescription": "Precisamos da sua localização para validar a entrega.",
+        "NSCalendarsUsageDescription": "Precisamos acessar o calendário para agendar entregas.",
+        "NSCalendarsFullAccessUsageDescription": "Precisamos acessar o calendário para agendar entregas."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -19,7 +26,21 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.pencola.appeulaliane",
+      "permissions": [
+        "CAMERA",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR",
+        "android.permission.READ_CALENDAR",
+        "android.permission.WRITE_CALENDAR",
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
     },
     "web": {
       "output": "static",
@@ -27,6 +48,24 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "O app precisa acessar seu calendário para agendar entregas."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "O app precisa acessar sua câmera para registrar o pedido."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "O app precisa da sua localização para confirmar a entrega."
+        }
+      ],
       [
         "expo-splash-screen",
         {
@@ -43,6 +82,14 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "cc7fdf4e-bc91-4530-bca4-c851395baef8"
+      }
     }
   }
 }
